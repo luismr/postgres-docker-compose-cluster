@@ -1,36 +1,35 @@
-version: '3.8'
-
 services:
-  postgres_primary:
+  rmf_classic_sugesstions:
     image: postgres:17
-    container_name: postgres_primary
+    container_name: rmf_classic_sugesstions
     env_file:
       - .env
     ports:
-      - "5432:5432"
+      - "9874:5432"
     volumes:
-      - postgres_primary_data:/var/lib/postgresql/data
-      - ./initdb.d/00_init.sql:/docker-entrypoint-initdb.d/00_init.sql
+      - rmf_classic_sugesstions_data:/var/lib/postgresql/data
+      - ./initdb.d:/docker-entrypoint-initdb.d:ro
+      - ./config/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-    command: postgres -c 'wal_level=replica' -c 'max_wal_senders=10' -c 'max_replication_slots=10' -c 'listen_addresses=*'
+    command: postgres -c 'wal_level=replica' -c 'max_wal_senders=10' -c 'max_replication_slots=10' -c 'listen_addresses=*' -c 'hba_file=/etc/postgresql/pg_hba.conf'
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  postgres_replica:
+  rmf_classic_sugesstions_replica:
     image: postgres:17
-    container_name: postgres_replica
+    container_name: rmf_classic_sugesstions_replica
     env_file:
       - .env
     ports:
-      - "5433:5432"
+      - "9873:5432"
     volumes:
-      - postgres_replica_data:/var/lib/postgresql/data
+      - rmf_classic_sugesstions_replica_data:/var/lib/postgresql/data
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
@@ -38,12 +37,16 @@ services:
     command: >
       bash -c "
         echo 'Waiting for primary to be ready...';
-        while ! pg_isready -h postgres_primary -p 5432 -U ${POSTGRES_USER}; do sleep 1; done;
-        echo 'Primary is ready, starting replica...';
-        rm -rf /var/lib/postgresql/data/* 2>/dev/null || true;
-        PGPASSWORD=${POSTGRES_PASSWORD} pg_basebackup -h postgres_primary -U replica -D /var/lib/postgresql/data -Fp -Xs -R -P;
+        until pg_isready -h rmf_classic_sugesstions -p 5432 -U ${POSTGRES_USER}; do sleep 1; done;
+        if [ ! -f /var/lib/postgresql/data/standby.signal ]; then
+          echo 'Cloning primary...';
+          rm -rf /var/lib/postgresql/data/* 2>/dev/null || true;
+          gosu postgres pg_basebackup -d 'host=rmf_classic_sugesstions port=5432 user=replica password=${POSTGRES_PASSWORD}' -D /var/lib/postgresql/data -Fp -Xs -R -P -S replica_slot;
+        else
+          echo 'Replica data directory already initialized, skipping base backup.';
+        fi;
         echo 'Replication setup complete, starting PostgreSQL...';
-        docker-entrypoint.sh postgres
+        exec docker-entrypoint.sh postgres
       "
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
@@ -52,8 +55,8 @@ services:
       retries: 5
 
 volumes:
-  postgres_primary_data:
-  postgres_replica_data:
+  rmf_classic_sugesstions_data:
+  rmf_classic_sugesstions_replica_data:
 
 networks:
   postgres-network:
